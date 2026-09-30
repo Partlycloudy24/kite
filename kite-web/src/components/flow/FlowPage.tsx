@@ -4,6 +4,7 @@ import { ReactFlowProvider, useReactFlow } from "@xyflow/react";
 import { useCallback } from "react";
 import Flow from "./Flow";
 import { FlowContextType } from "@/lib/flow/context";
+import { FlowHistoryProvider } from "@/lib/flow/history";
 import { LogEntry } from "@/lib/types/wire.gen";
 
 interface Props {
@@ -18,6 +19,7 @@ interface Props {
   isSaving: boolean;
   onSave: (data: FlowData) => void;
   onExit: () => void;
+  extraShareData?: Record<string, unknown>;
 }
 
 function InnerFlowPage({
@@ -31,6 +33,7 @@ function InnerFlowPage({
   onDeploy,
   onSave,
   onExit,
+  extraShareData,
 }: Props) {
   const { getNodes, getEdges } = useReactFlow<NodeType>();
 
@@ -48,6 +51,8 @@ function InnerFlowPage({
           hasUnsavedChanges={hasUnsavedChanges}
           isSaving={isSaving}
           hasUndeployedChanges={hasUndeployedChanges}
+          context={context}
+          extraShareData={extraShareData}
           onDeploy={onDeploy}
           onSave={save}
           onExit={onExit}
@@ -66,7 +71,9 @@ function InnerFlowPage({
 export default function FlowPage(props: Props) {
   return (
     <ReactFlowProvider>
-      <InnerFlowPage {...props} />
+      <FlowHistoryProvider initialFlow={props.flowData} onChange={props.onChange}>
+        <InnerFlowPage {...props} />
+      </FlowHistoryProvider>
     </ReactFlowProvider>
   );
 }

@@ -14,7 +14,13 @@ import {
   ModalComponentData,
   PermissionOverwriteData,
 } from "@/lib/types/flow.gen";
-import { Node, useNodes, useReactFlow, useStoreApi } from "@xyflow/react";
+import {
+  getConnectedEdges,
+  Node,
+  useNodes,
+  useReactFlow,
+  useStoreApi,
+} from "@xyflow/react";
 import {
   ChevronDownIcon,
   CircleAlertIcon,
@@ -174,7 +180,7 @@ function nodeTypeDocsPage(nodeType: string) {
 }
 
 export default function FlowNodeEditor({ nodeId }: Props) {
-  const { setNodes, deleteElements } = useReactFlow<Node<NodeData>>();
+  const { setNodes, deleteElements, getEdges } = useReactFlow<Node<NodeData>>();
   const store = useStoreApi();
 
   function close() {
@@ -206,8 +212,11 @@ export default function FlowNodeEditor({ nodeId }: Props) {
   }
 
   function deleteNode() {
+    if (!node) return;
+    const connectedEdges = getConnectedEdges([node], getEdges());
     deleteElements({
-      nodes: [node!],
+      nodes: [node],
+      edges: connectedEdges,
     });
   }
 

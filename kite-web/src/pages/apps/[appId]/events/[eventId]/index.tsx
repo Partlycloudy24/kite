@@ -122,6 +122,7 @@ export default function AppEventListenerPage() {
         <FlowPage
           flowData={listener.flow_source}
           context="event_discord"
+          extraShareData={{ source: listener.source }}
           hasUnsavedChanges={hasUnsavedChanges}
           onChange={onChange}
           isSaving={isSaving}

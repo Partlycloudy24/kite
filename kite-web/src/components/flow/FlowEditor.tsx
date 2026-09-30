@@ -15,10 +15,12 @@ import {
   useNodesState,
   useReactFlow,
 } from "@xyflow/react";
-import { DragEvent, useCallback } from "react";
+import debounce from "just-debounce-it";
+import { DragEvent, useCallback, useEffect, useMemo, useRef } from "react";
 
 import { edgeTypes, nodeTypes } from "@/lib/flow/components";
 import { FlowData } from "@/lib/flow/dataSchema";
+import { useFlowHistory } from "@/lib/flow/history";
 import { getLayoutedElements } from "@/lib/flow/layout";
 import { createNode, getNodeValues } from "@/lib/flow/nodes";
 import { useFlowClipboard } from "@/lib/hooks/flowClipboard";
@@ -38,6 +40,7 @@ export default function FlowEditor({
   onSelectionChange,
 }: Props) {
   const { theme } = useHookedTheme();
+  const { takeSnapshot, registerFlowMutator, isApplying } = useFlowHistory();
 
   // TODO: refactor?
   const [nodes, setNodes, onNodesChange] = useNodesState(
@@ -48,9 +51,40 @@ export default function FlowEditor({
   );
   const { getEdge, getNode, screenToFlowPosition, fitView } = useReactFlow();
 
+  const isDraggingRef = useRef(false);
+
+  useEffect(() => {
+    return registerFlowMutator({ setNodes, setEdges });
+  }, [registerFlowMutator, setNodes, setEdges]);
+
+  const onNodeDragStart = useCallback(() => {
+    isDraggingRef.current = true;
+  }, []);
+
+  const onNodeDragStop = useCallback(() => {
+    isDraggingRef.current = false;
+    takeSnapshot();
+  }, [takeSnapshot]);
+
+  const onSelectionDragStart = useCallback(() => {
+    isDraggingRef.current = true;
+  }, []);
+
+  const onSelectionDragStop = useCallback(() => {
+    isDraggingRef.current = false;
+    takeSnapshot();
+  }, [takeSnapshot]);
+
   const onConnect = useCallback(
-    (con: Connection) => setEdges((eds) => addEdge(con, eds)),
-    [setEdges]
+    (con: Connection) => {
+      setEdges((eds) => {
+        const nextEdges = addEdge(con, eds);
+        takeSnapshot({ nodes, edges: nextEdges });
+        return nextEdges;
+      });
+      onChange();
+    },
+    [setEdges, nodes, takeSnapshot, onChange]
   );
 
   const wrappedOnNodesChange = useCallback(
@@ -65,12 +99,25 @@ export default function FlowEditor({
         return true;
       });
 
+      const removedNodeIds = filteredChanges
+        .filter((c) => c.type === "remove")
+        .map((c) => (c as { id: string }).id);
+
+      if (removedNodeIds.length > 0) {
+        const removedSet = new Set(removedNodeIds);
+        setEdges((eds) =>
+          eds.filter(
+            (edge) => !removedSet.has(edge.source) && !removedSet.has(edge.target)
+          )
+        );
+      }
+
       if (filteredChanges.length > 0) {
         onNodesChange(filteredChanges);
         onChange();
       }
     },
-    [onNodesChange, onChange, getNode]
+    [onNodesChange, onChange, getNode, setEdges]
   );
 
   const wrappedOnEdgesChange = useCallback(
@@ -94,23 +141,38 @@ export default function FlowEditor({
 
   const onNodesDelete = useCallback(
     (deletedNodes: Node[]) => {
+      const deletedNodeIds = new Set(deletedNodes.map((n) => n.id));
+      const childIdsToDelete = new Set<string>();
+
       for (const node of deletedNodes) {
         const nodeValues = getNodeValues(node.type!);
 
         // delete children if this node owns them
         if (nodeValues.ownsChildren) {
-          const childIds = edges
+          edges
             .filter((edge) => edge.source === node.id)
-            .map((edge) => edge.target);
-
-          setEdges((edges) => edges.filter((edge) => edge.source !== node.id));
-          setNodes((nodes) =>
-            nodes.filter((n) => n.id !== node.id && !childIds.includes(n.id))
-          );
+            .forEach((edge) => {
+              childIdsToDelete.add(edge.target);
+              deletedNodeIds.add(edge.target);
+            });
         }
       }
+
+      const nextEdges = edges.filter(
+        (edge) =>
+          !deletedNodeIds.has(edge.source) && !deletedNodeIds.has(edge.target)
+      );
+      setEdges(nextEdges);
+
+      const nextNodes = nodes.filter((n) => !deletedNodeIds.has(n.id));
+      if (childIdsToDelete.size > 0) {
+        setNodes(nextNodes);
+      }
+
+      takeSnapshot({ nodes: nextNodes, edges: nextEdges });
+      onChange();
     },
-    [edges, setEdges, setNodes]
+    [nodes, edges, setEdges, setNodes, takeSnapshot, onChange]
   );
 
   const format = useCallback(() => {
@@ -118,11 +180,13 @@ export default function FlowEditor({
       direction: "TB",
     });
 
+    takeSnapshot({ nodes: formattedNodes.nodes, edges });
     setNodes(formattedNodes.nodes);
+    onChange();
     setTimeout(() => {
       fitView();
     }, 50);
-  }, [nodes, edges, setNodes, fitView]);
+  }, [nodes, edges, setNodes, fitView, takeSnapshot, onChange]);
 
   const onDragOver = useCallback((e: DragEvent) => {
     e.preventDefault();
@@ -144,13 +208,38 @@ export default function FlowEditor({
       });
       const [newNodes, newEdges] = createNode(type, position);
 
-      setNodes((nds) => nds.concat(newNodes));
-      setEdges((eds) => eds.concat(newEdges));
+      setNodes((nds) => {
+        const nextNodes = nds.concat(newNodes);
+        setEdges((eds) => {
+          const nextEdges = eds.concat(newEdges);
+          takeSnapshot({ nodes: nextNodes, edges: nextEdges });
+          return nextEdges;
+        });
+        return nextNodes;
+      });
+      onChange();
     },
-    [screenToFlowPosition, setNodes, setEdges]
+    [screenToFlowPosition, setNodes, setEdges, takeSnapshot, onChange]
   );
 
   const onMouseMove = useFlowClipboard({ setNodes, setEdges, onChange });
+
+  // Debounced snapshot for node data/field edits and miscellaneous changes
+  const debouncedSnapshot = useMemo(
+    () =>
+      debounce(() => {
+        if (!isDraggingRef.current && !isApplying()) {
+          takeSnapshot();
+        }
+      }, 500),
+    [takeSnapshot, isApplying]
+  );
+
+  useEffect(() => {
+    if (!isDraggingRef.current && !isApplying()) {
+      debouncedSnapshot();
+    }
+  }, [nodes, edges, debouncedSnapshot, isApplying]);
 
   const isValidConnection = useCallback(
     (con: Connection | Edge) => {
@@ -198,6 +287,10 @@ export default function FlowEditor({
       onNodesChange={wrappedOnNodesChange}
       onEdgesChange={wrappedOnEdgesChange}
       onNodesDelete={onNodesDelete}
+      onNodeDragStart={onNodeDragStart}
+      onNodeDragStop={onNodeDragStop}
+      onSelectionDragStart={onSelectionDragStart}
+      onSelectionDragStop={onSelectionDragStop}
       nodeTypes={nodeTypes}
       edgeTypes={edgeTypes}
       onDrop={onDrop}
